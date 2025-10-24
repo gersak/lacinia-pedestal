@@ -14,13 +14,12 @@
 
 (ns com.walmartlabs.lacinia.pedestal-async-error-test
   (:require
-   [clojure.test :refer [deftest is testing use-fixtures]]
+   [clojure.test :refer [deftest is use-fixtures]]
    [com.walmartlabs.lacinia.pedestal :refer [inject default-interceptors] :as lp]
    [com.walmartlabs.lacinia.test-utils :refer [error-proof-interceptor
                                                test-server-fixture
                                                send-request]]
-   [clojure.spec.test.alpha :as stest]
-   [io.pedestal.interceptor :refer [interceptor]]))
+   [clojure.spec.test.alpha :as stest]))
 
 (stest/instrument)
 
