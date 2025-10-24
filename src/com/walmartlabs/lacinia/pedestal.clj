@@ -18,7 +18,7 @@
   Many functions here were deprecated in 0.14.0, with replacements in the
   [[com.walmartlabs.lacinia.pedestal2]] namespace."
   (:require
-    [cheshire.core :as cheshire]
+    [charred.api :as json]
     [io.pedestal.interceptor :refer [interceptor]]
     [clojure.string :as str]
     [io.pedestal.http :as http]
@@ -109,7 +109,7 @@
     (internal/content-type request)))
 
 (defmethod extract-query :application/json [request]
-  (let [body (cheshire/parse-string (:body request) true)
+  (let [body (json/read-json (:body request) :key-fn keyword)
         query (:query body)
         variables (:variables body)
         operation-name (:operationName body)]
@@ -121,7 +121,7 @@
 (defmethod extract-query :application/graphql [request]
   (let [query (:body request)
         variables (when-let [vars (get-in request [:query-params :variables])]
-                    (cheshire/parse-string vars true))]
+                    (json/read-json vars :key-fn keyword))]
     {:graphql-query query
      :graphql-vars variables
      ::known-content-type true}))

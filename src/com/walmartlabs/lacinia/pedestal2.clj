@@ -15,7 +15,7 @@
 (ns ^{:added "0.14.0"} com.walmartlabs.lacinia.pedestal2
   "Utilities for creating handlers, interceptors, routes, and service maps needed by a Pedestal service
   that exposes a GraphQL API and GraphiQL IDE."
-  (:require [cheshire.core :as cheshire]
+  (:require [charred.api :as json]
             [clojure.string :as str]
             [com.walmartlabs.lacinia.pedestal.interceptors :as interceptors]
             [com.walmartlabs.lacinia.pedestal.internal :as internal]
@@ -68,7 +68,7 @@
     {:name ::graphql-data
      :enter (fn [context]
               (try
-                (let [payload (-> context :request :body (cheshire/parse-string true))
+                (let [payload (-> context :request :body (json/read-json :key-fn keyword))
                       {:keys [query variables]
                        operation-name :operationName} payload]
                   (update context :request

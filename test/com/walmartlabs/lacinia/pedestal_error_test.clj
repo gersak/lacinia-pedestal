@@ -19,8 +19,7 @@
    [com.walmartlabs.lacinia.test-utils :refer [error-proof-interceptor
                                                test-server-fixture
                                                send-request]]
-   [clojure.spec.test.alpha :as stest]
-   [io.pedestal.interceptor :refer [interceptor]]))
+   [clojure.spec.test.alpha :as stest]))
 
 (stest/instrument)
 

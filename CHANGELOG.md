@@ -1,3 +1,6 @@
+## 1.4 -- UNRELEASED
+
+
 ## 1.3.1 -- 17 Nov 2024
 
 This bug fix release corrects the fact that GraphiQL resouces were not
@@ -259,4 +262,3 @@ Update dependency on com.walmartlabs/lacinia to latest version, 0.15.0.
 ## 0.1.0 -- 19 Apr 2017
 
 First release.
-

@@ -16,7 +16,7 @@
   "Internal utilities not part of the public API."
   (:require
     [clojure.core.async :refer [chan put!]]
-    [cheshire.core :as cheshire]
+    [charred.api :as json]
     [com.walmartlabs.lacinia.util :as util]
     [com.walmartlabs.lacinia.parser :as parser]
     [com.walmartlabs.lacinia.pedestal.cache :as cache]
@@ -60,7 +60,7 @@
     (if (map? body)
       (-> context
           (assoc-in [:response :headers "Content-Type"] "application/json")
-          (update-in [:response :body] cheshire/generate-string))
+          (update-in [:response :body] json/write-json-str))
       context)))
 
 (defn failure-response
@@ -252,7 +252,7 @@
   (let [replacements {:asset-path asset-path
                       :api-path api-path
                       :subscriptions-path subscriptions-path
-                      :initial-connection-params (cheshire/generate-string ide-connection-params)
+                      :initial-connection-params (json/write-json-str ide-connection-params)
                       :request-headers (request-headers-string ide-headers)}]
     (-> "com/walmartlabs/lacinia/pedestal/graphiql.html"
         io/resource

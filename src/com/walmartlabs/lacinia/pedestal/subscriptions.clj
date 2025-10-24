@@ -22,7 +22,7 @@
     [com.walmartlabs.lacinia.internal-utils :refer [cond-let to-message]]
     [clojure.core.async :as async
      :refer [chan put! close! go-loop <! >! alt! thread]]
-    [cheshire.core :as cheshire]
+    [charred.api :as json]
     [io.pedestal.interceptor :refer [interceptor]]
     [io.pedestal.interceptor.chain :as chain]
     [io.pedestal.websocket :as ws]
@@ -54,7 +54,7 @@
   "Takes values from the input channel, encodes them as a JSON string, and
   puts them into the output-ch."
   [input-ch output-ch]
-  (xform-channel input-ch output-ch cheshire/generate-string))
+  (xform-channel input-ch output-ch json/write-json-str))
 
 (defn ^:private ws-parse-loop
   "Parses text messages sent from the client into Clojure data with keyword keys,
@@ -64,8 +64,8 @@
   [session-id input-ch output-ch response-data-ch]
   (go-loop []
     (when-some [text (<! input-ch)]
-      (when-some [parsed (try
-                           (cheshire/parse-string text true)
+      (when-some [parsed (try,
+                           (json/read-json text :key-fn keyword)
                            (catch Throwable t
                              (log/trace :event ::malformed-text :message text :session-id session-id)
                              (>! response-data-ch
