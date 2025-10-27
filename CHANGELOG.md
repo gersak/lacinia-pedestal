@@ -1,5 +1,10 @@
 ## 1.4 -- UNRELEASED
 
+lacinia-pedestal now depends only on  io.pedestal/pedestal.service (and not on
+io.pedestal/pedestal.jetty), so when upgrading you may need to add a dependency
+on pedestal.jetty (or on io.pedestal/pedestal.http-kit).
+
+[Closed Issues](https://github.com/walmartlabs/lacinia-pedestal/milestone/22?closed=1)
 
 ## 1.3.1 -- 17 Nov 2024
 
