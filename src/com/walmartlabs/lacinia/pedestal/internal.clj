@@ -20,7 +20,7 @@
     [com.walmartlabs.lacinia.util :as util]
     [com.walmartlabs.lacinia.parser :as parser]
     [com.walmartlabs.lacinia.pedestal.cache :as cache]
-    [clojure.string :as str]
+    [clojure.string :as string]
     [com.walmartlabs.lacinia.validator :as validator]
     [com.walmartlabs.lacinia.constants :as constants]
     [com.walmartlabs.lacinia.resolve :as resolve]
@@ -28,9 +28,7 @@
     [io.pedestal.log :as log]
     [clojure.java.io :as io]
     [ring.util.response :as response]
-    [io.pedestal.http :as http]
     [io.pedestal.interceptor.chain :as chain]
-    [com.walmartlabs.lacinia.pedestal.subscriptions :as subscriptions]
     [com.walmartlabs.lacinia.tracing :as tracing]))
 
 (def ^:private parsed-query-key-path [:request :parsed-lacinia-query])
@@ -41,11 +39,11 @@
   (if-let [[_ type _ _ raw-params] (re-matches #"\s*(([^/]+)/([^ ;]+))\s*(\s*;.*)?" (str s))]
     {:content-type (keyword type)
      :content-type-params
-     (->> (str/split (str raw-params) #"\s*;\s*")
+     (->> (string/split (str raw-params) #"\s*;\s*")
           (keep identity)
-          (remove str/blank?)
-          (map #(str/split % #"="))
-          (mapcat (fn [[k v]] [(keyword (str/lower-case k)) (str/trim v)]))
+          (remove string/blank?)
+          (map #(string/split % #"="))
+          (mapcat (fn [[k v]] [(keyword (string/lower-case k)) (string/trim v)]))
           (apply hash-map))}))
 
 (defn content-type
@@ -244,7 +242,7 @@
        (->> headers
             (map (fn [[k v]]
                    (str \" (name k) "\": \"" (name v) \")))
-            (str/join ", "))
+            (string/join ", "))
        "}"))
 
 (defn graphiql-response
@@ -257,12 +255,7 @@
     (-> "com/walmartlabs/lacinia/pedestal/graphiql.html"
         io/resource
         slurp
-        (str/replace #"\{\{(.+?)}}" (fn [[_ key]]
+        (string/replace #"\{\{(.+?)}}" (fn [[_ key]]
                                       (get replacements (keyword key) "--NO-MATCH--")))
         response/response
         (response/content-type "text/html"))))
-
-(defn add-subscriptions-support
-  [service-map compiled-schema subscriptions-path subscription-options]
-  (assoc-in service-map [::http/websockets subscriptions-path]
-            (subscriptions/subscription-websocket-endpoint compiled-schema subscription-options)))

@@ -26,7 +26,8 @@
     [com.walmartlabs.lacinia.pedestal.interceptors :as interceptors]
     [clojure.spec.alpha :as s]
     [com.walmartlabs.lacinia.pedestal.spec :as spec]
-    [com.walmartlabs.lacinia.pedestal.internal :as internal]))
+    [com.walmartlabs.lacinia.pedestal.internal :as internal]
+    [com.walmartlabs.lacinia.pedestal.internal2 :as internal2]))
 
 (when (-> *clojure-version* :minor (< 9))
   (require '[clojure.future :refer [boolean? pos-int?]]))
@@ -501,7 +502,7 @@
              ::http/join? false}
 
       subscriptions
-      (internal/add-subscriptions-support compiled-schema subscriptions-path options)
+      (internal2/add-subscriptions-support compiled-schema subscriptions-path options)
 
       graphiql
       (assoc ::http/secure-headers nil))))

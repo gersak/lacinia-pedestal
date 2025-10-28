@@ -19,6 +19,7 @@
             [clojure.string :as str]
             [com.walmartlabs.lacinia.pedestal.interceptors :as interceptors]
             [com.walmartlabs.lacinia.pedestal.internal :as internal]
+            [com.walmartlabs.lacinia.pedestal.internal2 :as internal2]
             [com.walmartlabs.lacinia.tracing :as tracing]
             [io.pedestal.http :as http]
             [io.pedestal.interceptor :refer [interceptor]]
@@ -313,7 +314,7 @@
   The subscription options are documented at [[listener-fn-factory]], with the addition
   of :subscriptions-path (defaulting to \"/ws\")."
   [service-map compiled-schema subscription-options]
-  (internal/add-subscriptions-support service-map
+  (internal2/add-subscriptions-support service-map
                                       compiled-schema
                                       (:subscriptions-path subscription-options default-subscriptions-path)
                                       subscription-options))
