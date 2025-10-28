@@ -1,5 +1,5 @@
 {:deps          {org.clojure/clojure          {:mvn/version "1.12.3"}
-                 com.walmartlabs/lacinia      {:mvn/version "1.2.2"}
+                 com.walmartlabs/lacinia      {:mvn/version "1.3.0-beta-1"}
                  io.pedestal/pedestal.service {:mvn/version "0.8.1"}
                  com.rpl/proxy-plus           {:mvn/version "0.0.11"}}
  :mvn/repos     {"redplanetlabs" {:url "https://nexus.redplanetlabs.com/repository/maven-public-releases"}}
