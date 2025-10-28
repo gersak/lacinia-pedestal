@@ -74,7 +74,7 @@
   [message]
   {:errors [{:message message}]})
 
-(defn as-errors
+(defn ^:private as-errors
   [exception]
   {:errors [(util/as-error-map exception)]})
 
@@ -259,3 +259,62 @@
                                       (get replacements (keyword key) "--NO-MATCH--")))
         response/response
         (response/content-type "text/html"))))
+
+(defn clear-graphql-data
+  [context]
+  (update context :request dissoc :graphql-query :graphql-vars :graphql-operation-name))
+
+(defn enter-graphql-data
+  [request-key]
+  (fn [context]
+    (try
+      (let [payload (-> context :request (get request-key) (json/read-json :key-fn keyword))
+            {:keys          [query variables]
+             operation-name :operationName} payload]
+        (update context :request
+                assoc
+                :graphql-query query
+                :graphql-vars variables
+                :graphql-operation-name operation-name))
+      (catch Exception e
+        (assoc context :response
+               (failure-response
+                 {:message (str "Invalid request: " (ex-message e))}))))))
+
+(defn error-graphql-data
+  [context exception]
+  (-> (clear-graphql-data context)
+      (add-error exception)))
+
+(defn enter-missing-query
+  [context]
+  (if (-> context :request :graphql-query string/blank?)
+    (assoc context :response
+           (failure-response "JSON 'query' key is missing or blank"))
+    context))
+
+(defn enter-initialize-tracing
+  [request-key]
+  (fn [context]
+    ;; Without this, the tracing during parsing doesn't know when the request actually started
+    ;; and assumes no real time has passed, which is less accurate. Capturing the timing start early
+    ;; ensures that time spent parsing the request body or doing other work before we get to parsing
+    ;; is properly accounted for.
+    (assoc-in context [:request request-key] (tracing/create-timing-start))))
+
+(defn enter-enable-tracing
+  [context]
+  ;; Must come after the app context is added to the request.
+  (let [request  (:request context)
+        enabled? (get-in request [:headers "lacinia-tracing"])]
+    (cond-> context
+      enabled? (update-in [:request :lacinia-app-context] tracing/enable-tracing))))
+
+(defn enter-body-data
+  [request-key]
+  (fn [context]
+    (let [content-type (-> context :request content-type)]
+      (if (= content-type :application/json)
+        (assoc-in context [:request request-key]
+                  (-> context :request :body slurp))
+        (assoc context :response (failure-response "Must be application/json"))))))
