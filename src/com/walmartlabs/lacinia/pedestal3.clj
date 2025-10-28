@@ -195,3 +195,6 @@ that exposes a GraphQL API and GraphiQL IDE."
     (inject-app-context-interceptor app-context)
     enable-tracing-interceptor
     query-executor-handler]))
+
+(defn subscription-routes
+  [compiled-schema ])

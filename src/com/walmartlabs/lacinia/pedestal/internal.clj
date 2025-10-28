@@ -14,22 +14,24 @@
 
 (ns ^:no-doc com.walmartlabs.lacinia.pedestal.internal
   "Internal utilities not part of the public API."
-  (:require
-    [clojure.core.async :refer [chan put!]]
-    [charred.api :as json]
-    [com.walmartlabs.lacinia.util :as util]
-    [com.walmartlabs.lacinia.parser :as parser]
-    [com.walmartlabs.lacinia.pedestal.cache :as cache]
-    [clojure.string :as string]
-    [com.walmartlabs.lacinia.validator :as validator]
-    [com.walmartlabs.lacinia.constants :as constants]
-    [com.walmartlabs.lacinia.resolve :as resolve]
-    [com.walmartlabs.lacinia.executor :as executor]
-    [io.pedestal.log :as log]
-    [clojure.java.io :as io]
-    [ring.util.response :as response]
-    [io.pedestal.interceptor.chain :as chain]
-    [com.walmartlabs.lacinia.tracing :as tracing]))
+  (:require [com.walmartlabs.lacinia :as lacinia]
+            [clojure.core.async :as async
+             :refer [chan put! close! go-loop <! >! alt! thread]]
+            [charred.api :as json]
+            [com.walmartlabs.lacinia.util :as util]
+            [com.walmartlabs.lacinia.parser :as parser]
+            [com.walmartlabs.lacinia.pedestal.cache :as cache]
+            [clojure.string :as string]
+            [com.walmartlabs.lacinia.validator :as validator]
+            [com.walmartlabs.lacinia.constants :as constants]
+            [com.walmartlabs.lacinia.resolve :as resolve]
+            [com.walmartlabs.lacinia.executor :as executor]
+            [com.walmartlabs.lacinia.internal-utils :refer [cond-let to-message]]
+            [io.pedestal.log :as log]
+            [clojure.java.io :as io]
+            [ring.util.response :as response]
+            [io.pedestal.interceptor.chain :as chain]
+            [com.walmartlabs.lacinia.tracing :as tracing]))
 
 (def ^:private parsed-query-key-path [:request :parsed-lacinia-query])
 
@@ -318,3 +320,445 @@
         (assoc-in context [:request request-key]
                   (-> context :request :body slurp))
         (assoc context :response (failure-response "Must be application/json"))))))
+
+;; Subscriptions
+
+(defn ^:private xform-channel
+  [input-ch output-ch xf]
+  (go-loop []
+    (if-some [input (<! input-ch)]
+      (let [output (xf input)]
+        (when (>! output-ch output)
+          (recur)))
+      (close! output-ch))))
+
+(defn response-encode-loop
+  "Takes values from the input channel, encodes them as a JSON string, and
+  puts them into the output-ch."
+  [input-ch output-ch]
+  (xform-channel input-ch output-ch json/write-json-str))
+
+(defn ws-parse-loop
+  "Parses text messages sent from the client into Clojure data with keyword keys,
+  which is passed along to the output-ch.
+
+  Parse errors are converted into connection_error messages sent to the response-ch."
+  [session-id input-ch output-ch response-data-ch]
+  (go-loop []
+    (when-some [text (<! input-ch)]
+      (when-some [parsed (try,
+                           (json/read-json text :key-fn keyword)
+                           (catch Throwable t
+                             (log/trace :event ::malformed-text :message text :session-id session-id)
+                             (>! response-data-ch
+                                 {:type    :connection_error
+                                  :payload (util/as-error-map t)})))]
+        (>! output-ch parsed))
+      (recur))))
+
+(defn ^:private execute-query-interceptors
+  "Executes the interceptor chain for an operation, and returns
+  a channel used to shutdown and cleanup the operation."
+  [id payload response-data-ch cleanup-ch context]
+  (let [shutdown-ch     (chan)
+        response-spy-ch (chan 1)
+        request         (assoc payload
+                               :id id
+                               :shutdown-ch shutdown-ch
+                               :response-data-ch response-spy-ch)]
+    ;; When the spy channel is closed, we write the id
+    ;; to the cleanup-ch; the containing CSP then removes the
+    ;; shutdown-ch from its subs map.
+    (go-loop []
+      (let [message (<! response-spy-ch)]
+        (if (some? message)
+          (do
+            (>! response-data-ch message)
+            (recur))
+          (>! cleanup-ch id))))
+
+    ;; Execute the chain, for side effects.
+    (chain/execute (update context :request merge request))
+
+    ;; Return a shutdown channel that the CSP can close to shutdown the subscription
+    shutdown-ch))
+
+(defn connection-loop
+  "A loop started for each connection."
+  [session-id keep-alive-ms ws-data-ch response-data-ch context]
+  (let [cleanup-ch (chan 1)]
+    ;; Keep track of subscriptions by (client-supplied) unique id.
+    ;; The value is a shutdown channel that, when closed, triggers
+    ;; a cleanup of the subscription.
+    (go-loop [connection-state {:subs {} :connection-params nil}]
+      (alt!
+        cleanup-ch
+        ([id]
+         (log/trace :event ::cleanup-ch :session-id session-id :id id)
+         (recur (update connection-state :subs dissoc id)))
+
+        ;; TODO: Maybe only after connection_init?
+        (async/timeout keep-alive-ms)
+        (do
+          (log/trace :event ::timeout :session-id session-id)
+          (>! response-data-ch {:type :ka})
+          (recur connection-state))
+
+        ws-data-ch
+        ([data]
+         (if (nil? data)
+           ;; When the client closes the connection, any running subscriptions need to
+           ;; shutdown and cleanup.
+           (do
+             (log/trace :event ::client-close :session-id session-id)
+             (run! close! (-> connection-state :subs vals)))
+           ;; Otherwise it's a message from the client to be acted upon.
+           (let [{:keys [id payload type]} data]
+             (case type
+               "connection_init"
+               (when (>! response-data-ch {:type :connection_ack})
+                 (recur (assoc connection-state :connection-params payload)))
+
+               ;; TODO: Track state, don't allow start, etc. until after connection_init
+
+               "start"
+               (if (contains? (:subs connection-state) id)
+                 (do
+                   (log/trace :event ::ignoring-duplicate :id id)
+                   (recur connection-state))
+                 (do
+                   (log/trace :event ::start :session-id session-id :id id)
+                   (let [merged-context  (assoc context :connection-params (:connection-params connection-state))
+                         sub-shutdown-ch (execute-query-interceptors id payload response-data-ch cleanup-ch merged-context)]
+                     (recur (assoc-in connection-state [:subs id] sub-shutdown-ch)))))
+
+               "stop"
+               (do
+                 (log/trace :event ::stop :id id)
+                 (when-some [sub-shutdown-ch (get-in connection-state [:subs id])]
+                   (close! sub-shutdown-ch))
+                 (recur connection-state))
+
+               "connection_terminate"
+               (do
+                 (log/trace :event ::terminate :id id)
+                 (run! close! (-> connection-state :subs vals))
+                 ;; This shuts down the connection entirely.
+                 (close! response-data-ch))
+
+               ;; Not recognized!
+               (let [response (cond-> {:type    :error
+                                       :payload {:message "Unrecognized message type."
+                                                 :type    type}}
+                                id (assoc :id id))]
+                 (log/trace :event ::unknown-type :type type :session-id session-id :id id)
+                 (>! response-data-ch response)
+                 (recur connection-state))))))))))
+
+;; We try to keep the interceptors here and in the main namespace as similar as possible, but
+;; there are distinctions that can't be readily smoothed over.
+
+(defn ^:private fix-up-message
+  [s]
+  (when-not (string/blank? s)
+    (-> s
+        string/trim
+        (string/replace #"\s*\.+$" "")
+        string/capitalize)))
+
+(defn ^:private ex-data-seq
+  "Uses the exception root causes to build a sequence of non-nil ex-data from each
+  exception in the exception stack."
+  [t]
+  (loop [stack   []
+         current ^Throwable t]
+    (let [stack' (conj stack current)
+          next-t (.getCause current)]
+      ;; Sometime .getCause returns this, sometimes nil, when the end of the stack is
+      ;; reached.
+      (if (or (nil? next-t)
+              (= current next-t))
+        (keep ex-data stack')
+        (recur stack' next-t)))))
+
+(defn ^:private construct-exception-payload
+  [^Throwable t]
+  (cond-let
+    :let [errors (->> t
+                      ex-data-seq
+                      (keep ::errors)
+                      first)
+          parse-errors (->> errors
+                            (keep :message)
+                            distinct)
+          locations (->> (mapcat :locations errors)
+                         (remove nil?)
+                         distinct
+                         seq)]
+
+    (seq parse-errors)
+    (cond-> {:message (str "Failed to parse GraphQL query. "
+                           (->> parse-errors
+                                (keep fix-up-message)
+                                (string/join "; "))
+                           ".")}
+      locations (assoc :locations locations))
+
+    ;; Apollo spec only has room for one error, so just use the first
+
+    (seq errors)
+    (cond-> (first errors)
+      locations (assoc :locations locations))
+
+    :else
+    ;; Strip off the exception added by Pedestal and convert
+    ;; the message into an error map
+    (cond-> {:message (to-message t)}
+      locations (assoc :locations locations))))
+
+(defn error-exception-handler
+  [context ^Throwable t]
+  (let [{:keys [id response-data-ch]} (:request context)
+        ;; Strip off the wrapper exception added by Pedestal
+        payload (construct-exception-payload (.getCause t))]
+    (put! response-data-ch {:type    :error
+                            :id      id
+                            :payload payload})
+    (close! response-data-ch)))
+
+(defn leave-send-operation-response
+  [context]
+  (when-let [response (:response context)]
+    (let [{:keys [id response-data-ch]} (:request context)]
+      (put! response-data-ch {:type    :data
+                              :id      id
+                              :payload response})
+      (put! response-data-ch {:type :complete
+                              :id   id})
+      (close! response-data-ch)))
+  context)
+
+(defn enter-subscription-query-parser
+  [schema]
+  (fn [context]
+    (let [{operation-name :operationName
+           :keys          [query variables]} (:request context)
+          actual-schema (if (map? schema)
+                          schema
+                          (schema))
+          parsed-query  (try
+                          (parser/parse-query actual-schema query operation-name)
+                          (catch Throwable t
+                            (throw (ex-info (to-message t)
+                                            {::errors (-> t ex-data :errors)}
+                                            t))))
+          prepared      (parser/prepare-with-query-variables parsed-query variables)
+          errors        (validator/validate actual-schema prepared {})]
+
+      (if (seq errors)
+        (throw (ex-info "Query validation errors." {::errors errors}))
+        (assoc-in context [:request :parsed-lacinia-query] prepared)))))
+
+(defn ^:private execute-operation
+  [context parsed-query]
+  (let [ch (chan 1)]
+    (-> context
+        (get-in [:request :lacinia-app-context])
+        (assoc
+          ::lacinia/connection-params (:connection-params context)
+          constants/parsed-query-key parsed-query)
+        executor/execute-query
+        (resolve/on-deliver! (fn [response]
+                               (put! ch (assoc context :response response))))
+        ;; Don't execute the query in a limited go block thread
+        thread)
+    ch))
+
+
+
+(defn ^:private execute-subscription
+  [context parsed-query]
+  (let [{:keys [::values-chan-fn request]} context
+        source-stream-ch     (values-chan-fn)
+        {:keys [id shutdown-ch response-data-ch]} request
+        source-stream        (fn accept-value [value]
+                               (cond
+                                 (nil? value)
+                                 (close! source-stream-ch)
+
+                                 (resolve/is-resolver-result? value)
+                                 (resolve/on-deliver! value accept-value)
+
+                                 :else
+                                 (put! source-stream-ch value)))
+        app-context          (-> context
+                                 (get-in [:request :lacinia-app-context])
+                                 (assoc
+                                   ::lacinia/connection-params (:connection-params context)
+                                   constants/parsed-query-key parsed-query))
+        ;; A streamer *must* succeed and return a cleanup function.  If there's a problem with the arguments,
+        ;; it may pass the source-stream a ResolverResult that wraps an error.
+        cleanup-fn           (executor/invoke-streamer app-context source-stream)
+        ;; Track how many streamed values are currently executing queries
+        *execution-count     (atom 0)
+        ;; Track when the streamer has passed a nil to shut down the subscription cleanly
+        *shutting-down?      (atom false)
+        ;; Closed when shutting down and execution count drops to 0
+        streamer-shutdown-ch (chan)]
+    (go-loop []
+      (alt!
+
+        ;; TODO: A timeout?
+
+        ;; This channel is closed when the client sends a "stop" message;
+        ;; any currently executing subscriptions (or executions of streamed
+        ;; values) are discarded.
+        shutdown-ch
+        (do
+          (close! response-data-ch)
+          (cleanup-fn))
+
+        source-stream-ch
+        ([value]
+         (cond
+
+           (some? value)
+           (do
+             (swap! *execution-count inc)
+             (log/trace :stream-value value :id id)
+             (-> app-context
+                 (assoc ::executor/resolved-value value)
+                 executor/execute-query
+                 (resolve/on-deliver! (fn [response]
+                                        (log/trace :response response :id id)
+                                        (put! response-data-ch
+                                              {:type    :data
+                                               :id      id
+                                               :payload response})
+                                        (let [new-count (swap! *execution-count dec)]
+                                          (when (and @*shutting-down?
+                                                     (zero? new-count))
+                                            (close! streamer-shutdown-ch)))))
+                 ;; Don't execute the query in a limited go block thread
+                 thread))
+
+           (= 0 @*execution-count)
+           (close! streamer-shutdown-ch)
+
+           :else
+           (reset! *shutting-down? true))
+         (recur))
+
+        ;; This is a clean shutdown from a streamer that signaled (via passing a nil)
+        ;; that the subscription is exhausted.  response-data-ch is only closed
+        ;; after any currently executing queries have first put their
+        ;; responses on it.
+        streamer-shutdown-ch
+        (do
+          (>! response-data-ch {:type :complete
+                                :id   id})
+          (close! response-data-ch)
+          (cleanup-fn)
+          (log/trace :event :streamer-shutdown :id id))))
+
+    ;; Return the context unchanged, it will unwind while the above process
+    ;; does the real work.
+    context))
+
+(defn ^:private execute-subscription
+  [context parsed-query]
+  (let [{:keys [::values-chan-fn request]} context
+        source-stream-ch     (values-chan-fn)
+        {:keys [id shutdown-ch response-data-ch]} request
+        source-stream        (fn accept-value [value]
+                               (cond
+                                 (nil? value)
+                                 (close! source-stream-ch)
+
+                                 (resolve/is-resolver-result? value)
+                                 (resolve/on-deliver! value accept-value)
+
+                                 :else
+                                 (put! source-stream-ch value)))
+        app-context          (-> context
+                                 (get-in [:request :lacinia-app-context])
+                                 (assoc
+                                   ::lacinia/connection-params (:connection-params context)
+                                   constants/parsed-query-key parsed-query))
+        ;; A streamer *must* succeed and return a cleanup function.  If there's a problem with the arguments,
+        ;; it may pass the source-stream a ResolverResult that wraps an error.
+        cleanup-fn           (executor/invoke-streamer app-context source-stream)
+        ;; Track how many streamed values are currently executing queries
+        *execution-count     (atom 0)
+        ;; Track when the streamer has passed a nil to shut down the subscription cleanly
+        *shutting-down?      (atom false)
+        ;; Closed when shutting down and execution count drops to 0
+        streamer-shutdown-ch (chan)]
+    (go-loop []
+      (alt!
+
+        ;; TODO: A timeout?
+
+        ;; This channel is closed when the client sends a "stop" message;
+        ;; any currently executing subscriptions (or executions of streamed
+        ;; values) are discarded.
+        shutdown-ch
+        (do
+          (close! response-data-ch)
+          (cleanup-fn))
+
+        source-stream-ch
+        ([value]
+         (cond
+
+           (some? value)
+           (do
+             (swap! *execution-count inc)
+             (log/trace :stream-value value :id id)
+             (-> app-context
+                 (assoc ::executor/resolved-value value)
+                 executor/execute-query
+                 (resolve/on-deliver! (fn [response]
+                                        (log/trace :response response :id id)
+                                        (put! response-data-ch
+                                              {:type    :data
+                                               :id      id
+                                               :payload response})
+                                        (let [new-count (swap! *execution-count dec)]
+                                          (when (and @*shutting-down?
+                                                     (zero? new-count))
+                                            (close! streamer-shutdown-ch)))))
+                 ;; Don't execute the query in a limited go block thread
+                 thread))
+
+           (= 0 @*execution-count)
+           (close! streamer-shutdown-ch)
+
+           :else
+           (reset! *shutting-down? true))
+         (recur))
+
+        ;; This is a clean shutdown from a streamer that signaled (via passing a nil)
+        ;; that the subscription is exhausted.  response-data-ch is only closed
+        ;; after any currently executing queries have first put their
+        ;; responses on it.
+        streamer-shutdown-ch
+        (do
+          (>! response-data-ch {:type :complete
+                                :id   id})
+          (close! response-data-ch)
+          (cleanup-fn)
+          (log/trace :event :streamer-shutdown :id id))))
+
+    ;; Return the context unchanged, it will unwind while the above process
+    ;; does the real work.
+    context))
+
+(defn enter-execute-operation
+  [context]
+  (let [request        (:request context)
+        parsed-query   (:parsed-lacinia-query request)
+        operation-type (-> parsed-query parser/operations :type)]
+    (if (= operation-type :subscription)
+      (execute-subscription context parsed-query)
+      (execute-operation context parsed-query))))
