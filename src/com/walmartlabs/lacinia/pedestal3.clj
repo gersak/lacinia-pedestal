@@ -17,7 +17,9 @@
 that exposes a GraphQL API and GraphiQL IDE."
   {:added "1.4.0"}
   (:require [com.walmartlabs.lacinia.pedestal.interceptors :as interceptors]
+            [io.pedestal.http.route.definition.table :as table]
             [io.pedestal.interceptor :refer [interceptor]]
+            [com.walmartlabs.lacinia.pedestal.subscriptions2 :as subscriptions2]
             [com.walmartlabs.lacinia.pedestal.internal :as internal]))
 
 (def json-response-interceptor
@@ -140,7 +142,9 @@ that exposes a GraphQL API and GraphiQL IDE."
 (def initialize-tracing-interceptor
   "Initializes timing information for the request; largely, this captures the earliest
   possible start time for the request (before any other interceptors), just in case
-  tracing is enabled for this request (that decision is made by [[enable-tracing-interceptor]])."
+  tracing is enabled for this request (that decision is made by
+
+  [[enable-tracing-interceptor]])."
   (interceptor
     {:name  ::initialize-tracing
      :enter (internal/enter-initialize-tracing ::timing-start)}))
@@ -196,5 +200,14 @@ that exposes a GraphQL API and GraphiQL IDE."
     enable-tracing-interceptor
     query-executor-handler]))
 
+
 (defn subscription-routes
-  [compiled-schema ])
+  "Returns a route for a WebSocket-based subscription on `/ws`.
+
+  This should be considered *scaffolding*, suitable only for the initial stages of development,
+  and should be replaced in an actively maintained code base with direct calls to
+  [[subscription-interceptor]]."
+  [compiled-schema]
+  (table/table-routes
+    [["/ws" :get (subscriptions2/subscription-interceptor compiled-schema nil)
+      :route-name ::subscriptions]]))

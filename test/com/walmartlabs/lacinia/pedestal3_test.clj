@@ -36,7 +36,8 @@
         interceptors (p3/default-interceptors schema nil {:parsed-query-cache (cache/parsed-query-cache 20)})
         connector    (-> (conn/default-connector-map 8888)
                          (conn/with-routes #{["/api" :post interceptors
-                                              :route-name ::api]})
+                                              :route-name ::api]}
+                                           (p3/subscription-routes schema))
                          (jetty/create-connector nil)
                          (conn/start!))]
     (try
@@ -45,7 +46,6 @@
         (conn/stop! connector)))))
 
 (use-fixtures :once server-fixture)
-#_
 (use-fixtures :each (tu/subscriptions-fixture "ws://localhost:8888/ws"))
 
 (defn send-request
@@ -138,7 +138,7 @@
                                :message    "Exception in resolver for `Query/fail': resolver exception"}]}}
            (select-keys response [:status :body])))))
 
-#_(deftest subscriptions-ws-request
+(deftest subscriptions-ws-request
     (tu/send-init)
     (tu/expect-message {:type "connection_ack"}))
 
