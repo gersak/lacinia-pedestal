@@ -200,9 +200,10 @@
                        (log/trace :event ::closed :reason reason :session-id session-id)
                        (close! response-data-ch)
                        (close! ws-data-ch))
-        ws-opts      {:on-open  on-open
-                      :on-close on-close
-                      :on-text  on-text}]
+        ws-opts      {:subprotocols ["graphql-ws"]
+                      :on-open      on-open
+                      :on-close     on-close
+                      :on-text      on-text}]
     (interceptor
       {:name  ::subscription-websocket
        :enter (fn [context]
