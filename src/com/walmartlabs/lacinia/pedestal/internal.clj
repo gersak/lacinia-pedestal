@@ -17,7 +17,8 @@
   (:require [com.walmartlabs.lacinia :as lacinia]
             [clojure.core.async :as async
              :refer [chan put! close! go-loop <! >! alt! thread]]
-            [charred.api :as json]
+            [io.pedestal.json :as json]
+            [io.pedestal.http.response :as http-response]
             [com.walmartlabs.lacinia.util :as util]
             [com.walmartlabs.lacinia.parser :as parser]
             [com.walmartlabs.lacinia.pedestal.cache :as cache]
@@ -31,9 +32,22 @@
             [clojure.java.io :as io]
             [ring.util.response :as response]
             [io.pedestal.interceptor.chain :as chain]
-            [com.walmartlabs.lacinia.tracing :as tracing]))
+            [com.walmartlabs.lacinia.tracing :as tracing])
+  (:import (java.io ByteArrayOutputStream StringReader)))
 
 (def ^:private parsed-query-key-path [:request :parsed-lacinia-query])
+
+(defn ^:private write-json-str
+  "Encodes value as a JSON string using the Pedestal JSON abstraction."
+  [value]
+  (let [out (ByteArrayOutputStream.)]
+    (json/stream-json value out)
+    (.toString out "UTF-8")))
+
+(defn ^:private parse-json
+  "Parses a JSON string into Clojure data with keyword keys."
+  [s]
+  (json/read-json (StringReader. s) {:key-fn keyword}))
 
 (defn parse-content-type
   "Parse `s` as an RFC 2616 media type."
@@ -60,7 +74,7 @@
     (if (map? body)
       (-> context
           (assoc-in [:response :headers "Content-Type"] "application/json")
-          (update-in [:response :body] json/write-json-str))
+          (assoc-in [:response :body] (http-response/stream-json body)))
       context)))
 
 (defn failure-response
@@ -252,7 +266,7 @@
   (let [replacements {:asset-path asset-path
                       :api-path api-path
                       :subscriptions-path subscriptions-path
-                      :initial-connection-params (json/write-json-str ide-connection-params)
+                      :initial-connection-params (write-json-str ide-connection-params)
                       :request-headers (request-headers-string ide-headers)}]
     (-> "com/walmartlabs/lacinia/pedestal/graphiql.html"
         io/resource
@@ -270,7 +284,7 @@
   [request-key]
   (fn [context]
     (try
-      (let [payload (-> context :request (get request-key) (json/read-json :key-fn keyword))
+      (let [payload (-> context :request (get request-key) parse-json)
             {:keys          [query variables]
              operation-name :operationName} payload]
         (update context :request
@@ -336,7 +350,7 @@
   "Takes values from the input channel, encodes them as a JSON string, and
   puts them into the output-ch."
   [input-ch output-ch]
-  (xform-channel input-ch output-ch json/write-json-str))
+  (xform-channel input-ch output-ch write-json-str))
 
 (defn ws-parse-loop
   "Parses text messages sent from the client into Clojure data with keyword keys,
@@ -346,8 +360,8 @@
   [session-id input-ch output-ch response-data-ch]
   (go-loop []
     (when-some [text (<! input-ch)]
-      (when-some [parsed (try,
-                           (json/read-json text :key-fn keyword)
+      (when-some [parsed (try
+                           (parse-json text)
                            (catch Throwable t
                              (log/trace :event ::malformed-text :message text :session-id session-id)
                              (>! response-data-ch
