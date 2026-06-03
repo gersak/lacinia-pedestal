@@ -38,8 +38,8 @@
 
 (defn server-fixture
   [f]
-  (reset! tu/*ping-subscribes 0)
-  (reset! tu/*ping-cleanups 0)
+  (reset! *ping-subscribes 0)
+  (reset! *ping-cleanups 0)
   (let [schema            (tu/compile-schema)
         interceptors      (p3/default-interceptors schema nil {:parsed-query-cache (cache/parsed-query-cache 20)})
         subscription-interceptor (subscriptions2/subscription-interceptor schema {:keep-alive-ms 200})
@@ -77,7 +77,7 @@
          client/request
          (update :body #(try
                           (json/read-json % :key-fn keyword)
-                          (catch Exception t
+                          (catch Exception _
                             %)))))))
 
 (deftest basic-request

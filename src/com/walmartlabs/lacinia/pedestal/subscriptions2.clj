@@ -178,8 +178,7 @@
         on-open      (fn [^WebSocketChannel channel _request]
                        ;; TODO: parameter to generate session id
                        (let [session-id       (str (random-uuid))
-                             _                (do
-                                                (log/trace :event ::connected :id session-id))
+                             _                (log/trace :event ::connected :id session-id)
                              ; server data -> client
                              response-data-ch (response-chan-fn)
                              send-ch          (websocket/start-ws-connection channel {:send-buffer-or-n send-buffer-or-n})

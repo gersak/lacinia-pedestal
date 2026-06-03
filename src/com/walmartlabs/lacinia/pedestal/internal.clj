@@ -27,9 +27,10 @@
             [com.walmartlabs.lacinia.constants :as constants]
             [com.walmartlabs.lacinia.resolve :as resolve]
             [com.walmartlabs.lacinia.executor :as executor]
-            [com.walmartlabs.lacinia.internal-utils :refer [cond-let to-message]]
+            [com.walmartlabs.lacinia.internal-utils :refer [to-message]]
             [io.pedestal.log :as log]
             [clojure.java.io :as io]
+            [better-cond.core :as b]
             [ring.util.response :as response]
             [io.pedestal.interceptor.chain :as chain]
             [com.walmartlabs.lacinia.tracing :as tracing])
@@ -52,7 +53,7 @@
 (defn parse-content-type
   "Parse `s` as an RFC 2616 media type."
   [s]
-  (if-let [[_ type _ _ raw-params] (re-matches #"\s*(([^/]+)/([^ ;]+))\s*(\s*;.*)?" (str s))]
+  (when-let [[_ type _ _ raw-params] (re-matches #"\s*(([^/]+)/([^ ;]+))\s*(\s*;.*)?" (str s))]
     {:content-type (keyword type)
      :content-type-params
      (->> (string/split (str raw-params) #"\s*;\s*")
@@ -82,9 +83,9 @@
   ([body]
    (failure-response 400 body))
   ([status body]
-   {:status status
+   {:status  status
     :headers {}
-    :body body}))
+    :body    body}))
 
 (defn message-as-errors
   [message]
@@ -101,14 +102,14 @@
                     (if graphql-operation-name
                       [graphql-query graphql-operation-name]
                       graphql-query))
-        cached (cache/get-parsed-query cache cache-key)]
+        cached    (cache/get-parsed-query cache cache-key)]
     (if cached
       (assoc-in context parsed-query-key-path cached)
       (try
         (let [actual-schema (if (map? compiled-schema)
                               compiled-schema
                               (compiled-schema))
-              parsed-query (parser/parse-query actual-schema graphql-query graphql-operation-name timing-start)]
+              parsed-query  (parser/parse-query actual-schema graphql-query graphql-operation-name timing-start)]
           (->> parsed-query
                (cache/store-parsed-query cache cache-key)
                (assoc-in context parsed-query-key-path)))
@@ -138,15 +139,15 @@
   [context]
   (try
     (let [{parsed-query :parsed-lacinia-query
-           vars :graphql-vars} (:request context)
+           vars         :graphql-vars} (:request context)
           {:keys [::tracing/timing-start]} parsed-query
-          start-offset (tracing/offset-from-start timing-start)
-          start-nanos (System/nanoTime)
-          prepared (parser/prepare-with-query-variables parsed-query vars)
+          start-offset    (tracing/offset-from-start timing-start)
+          start-nanos     (System/nanoTime)
+          prepared        (parser/prepare-with-query-variables parsed-query vars)
           compiled-schema (get prepared constants/schema-key)
-          errors (validator/validate compiled-schema prepared {})
-          prepared' (assoc prepared ::tracing/validation {:start-offset start-offset
-                                                          :duration (tracing/duration start-nanos)})]
+          errors          (validator/validate compiled-schema prepared {})
+          prepared'       (assoc prepared ::tracing/validation {:start-offset start-offset
+                                                                :duration     (tracing/duration start-nanos)})]
       (if (seq errors)
         (assoc context :response (failure-response {:errors errors}))
         (assoc-in context parsed-query-key-path prepared')))
@@ -168,7 +169,7 @@
 (defn on-leave-status-conversion
   [context]
   (let [response (:response context)
-        errors (get-in response [:body :errors])
+        errors   (get-in response [:body :errors])
         statuses (keep #(-> % :extensions :status) errors)]
     (if (seq statuses)
       (let [max-status (reduce max (:status response) statuses)]
@@ -183,14 +184,14 @@
 
   Based on the (private) `io.pedestal.interceptor.chain/throwable->ex-info` function of pedestal"
   [{::chain/keys [execution-id] :as context} exception interceptor-name]
-  (let [exception-str (pr-str (type exception))
-        msg (str exception-str " in Interceptor " interceptor-name " - " (ex-message exception))
+  (let [exception-str     (pr-str (type exception))
+        msg               (str exception-str " in Interceptor " interceptor-name " - " (ex-message exception))
         wrapped-exception (ex-info msg
-                                   (merge {:execution-id execution-id
-                                           :stage :enter
-                                           :interceptor interceptor-name
+                                   (merge {:execution-id   execution-id
+                                           :stage          :enter
+                                           :interceptor    interceptor-name
                                            :exception-type (keyword exception-str)
-                                           :exception exception}
+                                           :exception      exception}
                                           (ex-data exception))
                                    exception)]
     (assoc context ::chain/error wrapped-exception)))
@@ -210,18 +211,18 @@
     ;; When :data is missing, then a failure occurred during parsing or preparing
     ;; the request, which indicates a bad request, rather than some failure
     ;; during execution.
-    (let [status (if (contains? result :data)
-                   200
-                   400)
-          response {:status status
+    (let [status   (if (contains? result :data)
+                     200
+                     400)
+          response {:status  status
                     :headers {}
-                    :body result}]
+                    :body    result}]
       (assoc context :response response))))
 
 (defn ^:private execute-query
   [context]
   (let [request (:request context)
-        {q :parsed-lacinia-query
+        {q           :parsed-lacinia-query
          app-context :lacinia-app-context} request]
     (executor/execute-query (assoc app-context
                                    constants/parsed-query-key q))))
@@ -230,7 +231,7 @@
   [interceptor-name]
   (fn [context]
     (let [resolver-result (execute-query context)
-          *result (promise)]
+          *result         (promise)]
       (resolve/on-deliver! resolver-result
                            (fn [result]
                              (deliver *result result)))
@@ -239,7 +240,7 @@
 (defn on-enter-async-query-executor
   [interceptor-name]
   (fn [context]
-    (let [ch (chan 1)
+    (let [ch              (chan 1)
           resolver-result (execute-query context)]
       (resolve/on-deliver! resolver-result
                            (fn [result]
@@ -263,16 +264,16 @@
 
 (defn graphiql-response
   [api-path subscriptions-path asset-path ide-headers ide-connection-params]
-  (let [replacements {:asset-path asset-path
-                      :api-path api-path
-                      :subscriptions-path subscriptions-path
+  (let [replacements {:asset-path                asset-path
+                      :api-path                  api-path
+                      :subscriptions-path        subscriptions-path
                       :initial-connection-params (write-json-str ide-connection-params)
-                      :request-headers (request-headers-string ide-headers)}]
+                      :request-headers           (request-headers-string ide-headers)}]
     (-> "com/walmartlabs/lacinia/pedestal/graphiql.html"
         io/resource
         slurp
         (string/replace #"\{\{(.+?)}}" (fn [[_ key]]
-                                      (get replacements (keyword key) "--NO-MATCH--")))
+                                         (get replacements (keyword key) "--NO-MATCH--")))
         response/response
         (response/content-type "text/html"))))
 
@@ -497,7 +498,7 @@
 
 (defn ^:private construct-exception-payload
   [^Throwable t]
-  (cond-let
+  (b/cond
     :let [errors (->> t
                       ex-data-seq
                       (keep ::errors)
