@@ -35,7 +35,7 @@
 (deftest calls-post-error-interceptor
   (reset! error-proof nil)
   (send-request "{ fail }")
-  (let [[ctx ex] @error-proof]
+  (let [[_ ex] @error-proof]
     (is (= "clojure.lang.ExceptionInfo in Interceptor :com.walmartlabs.lacinia.pedestal/async-query-executor - Exception in resolver for `Query/fail': resolver exception"
            (ex-message ex)))
     (is (= {:arguments nil

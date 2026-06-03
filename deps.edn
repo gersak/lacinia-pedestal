@@ -1,6 +1,7 @@
 {:deps          {org.clojure/clojure          {:mvn/version "1.12.5"}
                  com.walmartlabs/lacinia      {:mvn/version "1.3.0"}
                  io.pedestal/pedestal.service {:mvn/version "0.8.2-beta-7"}
+                 better-cond/better-cond      {:mvn/version "2.1.5"}
                  com.rpl/proxy-plus           {:mvn/version "0.0.11"}}
  :mvn/repos     {"redplanetlabs" {:url "https://nexus.redplanetlabs.com/repository/maven-public-releases"}}
  :paths         ["src" "resources"]
@@ -35,7 +36,9 @@
    :exec-fn     cognitect.test-runner.api/test}
 
   ;; clj -T:build <command>
-  :build {:deps       {io.github.hlship/build-tools {:git/tag "0.12.1" :git/sha "05f3aeb"}}
+  :build {:deps       {io.github.hlship/build-tools {:git/tag "0.12.1" :git/sha "05f3aeb"}
+                       org.clj-commons/pretty       {:mvn/version "3.8.0"}
+                       clj-kondo/clj-kondo          {:mvn/version "2026.04.15"}}
           :ns-default build}}
 
  :net.lewisship.build/scm

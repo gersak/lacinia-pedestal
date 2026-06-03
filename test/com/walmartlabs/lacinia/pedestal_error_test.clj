@@ -40,7 +40,7 @@
   (reset! prior-error-proof nil)
   (reset! post-error-proof nil)
   (send-request "{ fail }")
-  (let [[ctx ex] @post-error-proof]
+  (let [[_ ex] @post-error-proof]
     (is (= "clojure.lang.ExceptionInfo in Interceptor :com.walmartlabs.lacinia.pedestal/query-executor - Exception in resolver for `Query/fail': resolver exception"
            (ex-message ex)))
     (is (= {:arguments nil

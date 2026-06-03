@@ -65,7 +65,7 @@
          client/request
          (update :body #(try
                           (json/read-json % :key-fn keyword)
-                          (catch Exception t
+                          (catch Exception _
                             %)))))))
 
 (deftest basic-request

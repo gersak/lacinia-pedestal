@@ -16,13 +16,14 @@
 
 (ns build
   (:require [clojure.tools.build.api :as b]
+            [clj-commons.ansi :refer [pout]]
             [net.lewisship.build :refer [requiring-invoke]]))
 
 (def lib 'com.walmartlabs/lacinia-pedestal)
 (def version "1.3.1")
 
 (def jar-params {:project-name lib
-                 :version version})
+                 :version      version})
 
 (def class-dir "target/classes")
 
@@ -31,24 +32,24 @@
   (b/delete {:path "target"}))
 
 (def ^:private graphiql-files
-  {"graphiql/graphiql.min.js" "graphiql.min.js"
-   "graphiql/graphiql.min.css" "graphiql.min.css"
-   "es6-promise/dist/es6-promise.auto.min.js" "es6-promise.auto.min.js"
-   "react/umd/react.production.min.js" "react.min.js"
-   "react-dom/umd/react-dom.production.min.js" "react-dom.min.js"
+  {"graphiql/graphiql.min.js"                     "graphiql.min.js"
+   "graphiql/graphiql.min.css"                    "graphiql.min.css"
+   "es6-promise/dist/es6-promise.auto.min.js"     "es6-promise.auto.min.js"
+   "react/umd/react.production.min.js"            "react.min.js"
+   "react-dom/umd/react-dom.production.min.js"    "react-dom.min.js"
    "subscriptions-transport-ws/browser/client.js" "subscriptions-transport-ws-browser-client.js"})
 
 (defn prep
   "Runs `npm install` and copies necessary files into class-dir."
   [_]
   (let [{:keys [exit] :as process-result}
-        (b/process {:command-args ["npm" "ci"] 
-                    :dir "node"})]
+        (b/process {:command-args ["npm" "ci"]
+                    :dir          "node"})]
     (when-not (zero? exit)
       (throw (ex-info "npm install failed"
                       process-result)))
     (doseq [[node-path resource-name] graphiql-files
-            :let [in-path (str "node/node_modules/" node-path)
+            :let [in-path  (str "node/node_modules/" node-path)
                   out-path (str class-dir "/graphiql/" resource-name)]]
       (b/copy-file {:src in-path :target out-path}))))
 
@@ -70,5 +71,23 @@
   [_params]
   (requiring-invoke net.lewisship.build.codox/generate
                     {:project-name lib
-                     :version version
-                     :aliases [:dev]}))
+                     :version      version
+                     :aliases      [:dev]}))
+
+(defn lint
+  "Lint source files using clj-kondo."
+  [opts]
+  (let [lint-options (merge {:lint ["src" "test"]
+                             :config
+                             {:linters
+                              {:unresolved-symbol
+                               {:exclude '[(clojure.test/is [match?])]}}}}
+                            opts)
+        kondo-run!   (requiring-resolve 'clj-kondo.core/run!)
+        kondo-print! (requiring-resolve 'clj-kondo.core/print!)
+        results      (kondo-run! lint-options)]
+    (kondo-print! results)
+    (when (pos? (get-in results [:summary :errors] 0))
+      (pout [:red [:bold "ERROR"] ": clj-kondo found errors 😢"])
+      (System/exit -1))
+    (pout [:bold.green "clj-kondo approves ☺️"])))
