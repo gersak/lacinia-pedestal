@@ -89,11 +89,6 @@
          (finally
            (http/stop service)))))))
 
-
-(defn get-url
-  [path]
-  (client/get (str "http://localhost:8888" path) {:throw-exceptions false}))
-
 (defn send-request
   "Sends a GraphQL request to the server and returns the response."
   ([query]
@@ -142,7 +137,7 @@
         :throw-exceptions false
         :headers {"Content-Type" content-type}}
        (cond->
-         json (assoc :body (json/write-json-str json)))
+         (some? json) (assoc :body (json/write-json-str json)))
        client/request
        (update :body
                #(try

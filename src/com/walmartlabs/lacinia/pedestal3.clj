@@ -49,7 +49,7 @@ that exposes a GraphQL API and GraphiQL IDE."
   :graphql-query (the query document as a string),
   :graphql-vars (a map)
   and :graphql-operation-name (a string).
-
+  
   These keys are dissoc'ed on leave, or on error."
   (interceptor
     {:name  ::graphql-data

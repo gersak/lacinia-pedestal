@@ -14,7 +14,7 @@
 
 (ns com.walmartlabs.lacinia.pedestal-error-test
   (:require
-   [clojure.test :refer [deftest is testing use-fixtures]]
+   [clojure.test :refer [deftest is use-fixtures]]
    [com.walmartlabs.lacinia.pedestal :refer [default-interceptors inject] :as lp]
    [com.walmartlabs.lacinia.test-utils :refer [error-proof-interceptor
                                                test-server-fixture

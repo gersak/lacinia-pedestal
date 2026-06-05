@@ -66,7 +66,7 @@
 
 (deftest empty-body
   (let [response (send-json-request :post nil "application/json")]
-    (is (= {:body   {:message "Invalid request: Unexpected end of input"}
+    (is (= {:body {:errors [{:message "Request body is empty."}]}
             :status 400}
            (select-keys response [:status :body])))))
 

@@ -109,15 +109,16 @@
   (fn [request]
     (internal/content-type request)))
 
-(defmethod extract-query :application/json [request]
-  (let [body (json/read-json (:body request) :key-fn keyword)
-        query (:query body)
-        variables (:variables body)
-        operation-name (:operationName body)]
-    {:graphql-query query
-     :graphql-vars variables
-     :graphql-operation-name operation-name
-     ::known-content-type true}))
+(defmethod extract-query :application/json [{:keys [body]}]
+  (when-not (str/blank? body)
+    (let [json-body      (json/read-json body :key-fn keyword)
+          query          (:query json-body)
+          variables      (:variables json-body)
+          operation-name (:operationName json-body)]
+      {:graphql-query          query
+       :graphql-vars           variables
+       :graphql-operation-name operation-name
+       ::known-content-type    true})))
 
 (defmethod extract-query :application/graphql [request]
   (let [query (:body request)
@@ -153,12 +154,17 @@
 
 (def ^{:deprecated "0.14.0"} body-data-interceptor
   "Converts the POSTed body from a input stream into a string.
+  
+  This overwrites the :body key of the request, which is dodgy and changed in the pedestal3 namespace to write
+  to key :json-body.
 
   Deprecated: Use [[pedestal2/body-data-interceptor]] instead."
   (interceptor
     {:name ::body-data
      :enter (fn [context]
-              (update-in context [:request :body] slurp))}))
+              (if (get-in context [:request :body])
+                (update-in context [:request :body] slurp)
+                context))}))
 
 (def ^{:deprecated "0.14.0"} graphql-data-interceptor
   "Extracts the raw data (query and variables) from the request using [[extract-query]].
@@ -182,7 +188,8 @@
         body (get request :body)
         message (cond
                   (= request-method :get) "Query parameter 'query' is missing or blank."
-                  (str/blank? body) "Request body is empty."
+                  (or (nil? body)
+                      (str/blank? body)) "Request body is empty."
                   (::known-content-type request) "GraphQL query not supplied in request body."
                   :else "Request content type must be application/graphql or application/json.")]
     (internal/message-as-errors message)))

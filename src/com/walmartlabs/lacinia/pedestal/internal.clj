@@ -284,19 +284,16 @@
 (defn enter-graphql-data
   [request-key]
   (fn [context]
-    (try
-      (let [payload (-> context :request (get request-key) parse-json)
-            {:keys          [query variables]
-             operation-name :operationName} payload]
-        (update context :request
-                assoc
-                :graphql-query query
-                :graphql-vars variables
-                :graphql-operation-name operation-name))
-      (catch Exception e
-        (assoc context :response
-               (failure-response
-                 {:message (str "Invalid request: " (ex-message e))}))))))
+    (let [payload (-> context
+                      (get-in [:request request-key])
+                      parse-json)
+          {:keys          [query variables]
+           operation-name :operationName} payload]
+      (update context :request
+              assoc
+              :graphql-query query
+              :graphql-vars variables
+              :graphql-operation-name operation-name))))
 
 (defn error-graphql-data
   [context exception]
