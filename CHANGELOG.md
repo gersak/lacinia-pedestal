@@ -1,3 +1,23 @@
+## 1.4 -- UNRELEASED
+
+lacinia-pedestal now depends only on `io.pedestal/pedestal.service` (and not on
+`io.pedestal/pedestal.jetty`), so when upgrading you may need to add a dependency
+on `pedestal.jetty` (or on `io.pedestal/pedestal.http-kit`).
+
+New namespace `com.walmartlabs.lacinia.pedestal3` targets the Pedestal 0.8 connector
+API (`io.pedestal.connector`), replacing the now-deprecated `io.pedestal.http` API used
+by `com.walmartlabs.lacinia.pedestal2`. Unlike `pedestal2`, `pedestal3` does not provide
+a `default-service` function; applications are expected to construct the connector map
+directly. The interceptors are otherwise equivalent, with the minor correction that
+`body-data-interceptor` writes to `:json-body` rather than overwriting `:body`.
+
+New namespace `com.walmartlabs.lacinia.pedestal.subscriptions2` provides WebSocket
+subscription support built on `io.pedestal.service.websocket`, the connector-native
+WebSocket abstraction. It replaces `com.walmartlabs.lacinia.pedestal.subscriptions`
+for use with `pedestal3`.
+
+[Closed Issues](https://github.com/walmartlabs/lacinia-pedestal/milestone/22?closed=1)
+
 ## 1.3.1 -- 17 Nov 2024
 
 This bug fix release corrects the fact that GraphiQL resouces were not
@@ -259,4 +279,3 @@ Update dependency on com.walmartlabs/lacinia to latest version, 0.15.0.
 ## 0.1.0 -- 19 Apr 2017
 
 First release.
-

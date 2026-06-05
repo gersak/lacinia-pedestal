@@ -1,49 +1,50 @@
-{:deps {org.clojure/clojure {:mvn/version "1.11.3"}
-        com.walmartlabs/lacinia {:mvn/version "1.2.2"}
-        com.fasterxml.jackson.core/jackson-core {:mvn/version "2.17.2"}
-        io.pedestal/pedestal.service {:mvn/version "0.7.0"}
-        io.pedestal/pedestal.jetty {:mvn/version "0.7.0"}
-        com.rpl/proxy-plus {:mvn/version "0.0.11"}}
- :mvn/repos {"redplanetlabs" {:url "https://nexus.redplanetlabs.com/repository/maven-public-releases"}}
- :paths ["src" "resources"]
- :deps/prep-lib {:alias :build
-                 :fn prep
+{:deps          {org.clojure/clojure          {:mvn/version "1.12.5"}
+                 com.walmartlabs/lacinia      {:mvn/version "1.3.0"}
+                 io.pedestal/pedestal.service {:mvn/version "0.8.2-beta-7"}
+                 better-cond/better-cond      {:mvn/version "2.1.5"}
+                 com.rpl/proxy-plus           {:mvn/version "0.0.11"}}
+ :mvn/repos     {"redplanetlabs" {:url "https://nexus.redplanetlabs.com/repository/maven-public-releases"}}
+ :paths         ["src" "resources"]
+ :deps/prep-lib {:alias  :build
+                 :fn     prep
                  :ensure "target/classes"}
  :aliases
- {:dev
-  {:extra-deps {clj-http/clj-http {:mvn/version "3.13.0"}
-                com.walmartlabs/test-reporting {:mvn/version "1.2"}
-                com.stuartsierra/component {:mvn/version "1.1.0"}
-                expound/expound {:mvn/version "0.9.0"}
-                hato/hato {:mvn/version "1.0.0"}
-                nubank/matcher-combinators {:mvn/version "3.9.1"}
-                io.github.hlship/trace {:mvn/version "1.3"}
-                org.clj-commons/pretty {:mvn/version "3.0.0"}
-                io.github.tonsky/clj-reload {:mvn/version "0.7.1"}
-                ch.qos.logback/logback-classic {:mvn/version "1.5.6"}}
-
-   :jvm-opts ["-Xmx500m"]
-   :extra-paths ["test" "dev-resources"
+ {
+  ;; clj -X:test
+  :test
+  {:extra-paths ["test" "dev-resources"
 
                  ;; Run clj -T:build prep to download sources from npm and move
                  ;; them to target/classes.  Unfortunate manual step.
 
-                 "target/classes"]}
+                 "target/classes"]
 
-  ;; clj -Xdev:test
-  :test
-  {:extra-deps {io.github.cognitect-labs/test-runner
-                {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
-   :exec-fn cognitect.test-runner.api/test}
+   :extra-deps  {io.github.cognitect-labs/test-runner
+                 {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                 io.pedestal/pedestal.jetty     {:mvn/version "0.8.2-beta-7"}
+                 io.github.hlship/trace         {:mvn/version "1.4"}
+                 org.clj-commons/pretty         {:mvn/version "3.8.0"}
+                 io.github.tonsky/clj-reload    {:mvn/version "1.0.0"}
+                 clj-http/clj-http              {:mvn/version "3.13.1"}
+                 com.walmartlabs/test-reporting {:mvn/version "1.2"}
+                 com.stuartsierra/component     {:mvn/version "1.2.0"}
+                 expound/expound                {:mvn/version "0.9.0"}
+                 hato/hato                      {:mvn/version "1.0.0"}
+                 nubank/matcher-combinators     {:mvn/version "3.10.0"}
+                 ch.qos.logback/logback-classic {:mvn/version "1.5.34"}}
+   :jvm-opts    ["-Xmx500m"]
+   :exec-fn     cognitect.test-runner.api/test}
 
   ;; clj -T:build <command>
-  :build {:deps {io.github.hlship/build-tools {:git/tag "0.10.2" :git/sha "3c446e4"}}
+  :build {:deps       {io.github.hlship/build-tools {:git/tag "0.12.1" :git/sha "05f3aeb"}
+                       org.clj-commons/pretty       {:mvn/version "3.8.0"}
+                       clj-kondo/clj-kondo          {:mvn/version "2026.04.15"}}
           :ns-default build}}
 
  :net.lewisship.build/scm
- {:url "https://github.com/walmartlabs/lacinia-pedestal"
+ {:url     "https://github.com/walmartlabs/lacinia-pedestal"
   :license :asl}
 
  :codox/config
  {:description "Expose Lacinia GraphQL as Pedestal endpoints"
-  :source-uri "https://github.com/walmartlabs/lacinia-pedestal/blob/master/{filepath}#L{line}"}}
+  :source-uri  "https://github.com/walmartlabs/lacinia-pedestal/blob/master/{filepath}#L{line}"}}

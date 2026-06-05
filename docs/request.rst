@@ -22,8 +22,8 @@ When using POST with the ``application/json`` content type, the body of the requ
     Optional: The name of the specific operation to execute, when the query document defines
     more than one named operation.
 
-This is the standard and expected request format, and the only one directly supported with the
-``com.walmartlabs.lacinia.pedestal2`` namespace.
+This is the standard and expected request format, and the only one directly supported with
+``com.walmartlabs.lacinia.pedestal3`` and ``com.walmartlabs.lacinia.pedestal2``.
 
 
 GET (deprecated)

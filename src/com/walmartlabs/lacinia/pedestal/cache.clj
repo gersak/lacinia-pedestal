@@ -44,6 +44,8 @@
 
   (store-parsed-query [_ _ parsed-query] parsed-query))
 
+^ :clj-kondo/ignore
+
 (defn synchronized-lru-map
   "Creates an LRU map, ordered by access, with a maximum number of stored values."
   [max-count]

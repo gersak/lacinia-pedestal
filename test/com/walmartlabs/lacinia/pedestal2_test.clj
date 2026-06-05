@@ -23,7 +23,7 @@
     [com.walmartlabs.lacinia.parser :refer [parse-query]]
     [com.walmartlabs.lacinia.test-utils :as tu]
     [io.pedestal.http :as http]
-    [cheshire.core :as cheshire]
+    [charred.api :as json]
     [clj-http.client :as client]
     [com.walmartlabs.test-reporting :refer [reporting]]
     [com.walmartlabs.lacinia.pedestal.cache :as cache]))
@@ -61,11 +61,11 @@
           :url "http://localhost:8888/api"
           :headers (merge {"Content-Type" "application/json"} headers)
           :throw-exceptions false
-          :body (cheshire/generate-string body)}
+          :body (json/write-json-str body)}
          client/request
          (update :body #(try
-                          (cheshire/parse-string % true)
-                          (catch Exception t
+                          (json/read-json % :key-fn keyword)
+                          (catch Exception _
                             %)))))))
 
 (deftest basic-request

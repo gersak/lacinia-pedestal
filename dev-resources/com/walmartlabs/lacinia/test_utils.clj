@@ -13,7 +13,7 @@
     [com.walmartlabs.lacinia.resolve :refer [resolve-as]]
     [hato.websocket :as ws]
     [io.pedestal.log :as log]
-    [cheshire.core :as cheshire]
+    [charred.api :as json]
     [com.walmartlabs.lacinia.resolve :as resolve])
   (:import [java.nio HeapCharBuffer]))
 
@@ -89,11 +89,6 @@
          (finally
            (http/stop service)))))))
 
-
-(defn get-url
-  [path]
-  (client/get (str "http://localhost:8888" path) {:throw-exceptions false}))
-
 (defn send-request
   "Sends a GraphQL request to the server and returns the response."
   ([query]
@@ -123,10 +118,10 @@
                 :method :post)
 
          vars
-         (assoc-in [:query-params :variables] (cheshire/generate-string vars)))
+         (assoc-in [:query-params :variables] (json/write-json-str vars)))
        client/request
        (update :body #(try
-                        (cheshire/parse-string % true)
+                        (json/read-json % :key-fn keyword)
                         (catch Exception t
                           %))))))
 
@@ -142,11 +137,11 @@
         :throw-exceptions false
         :headers {"Content-Type" content-type}}
        (cond->
-         json (assoc :body (cheshire/generate-string json)))
+         (some? json) (assoc :body (json/write-json-str json)))
        client/request
        (update :body
                #(try
-                  (cheshire/parse-string % true)
+                  (json/read-json % :key-fn keyword)
                   (catch Exception t %))))))
 
 (defn send-json-string-request
@@ -161,7 +156,7 @@
        client/request
        (update :body
                #(try
-                  (cheshire/parse-string % true)
+                  (json/read-json % :key-fn keyword)
                   (catch Exception t %))))))
 
 (def ws-uri "ws://localhost:8888/graphql-ws")
@@ -176,7 +171,7 @@
   [data]
   (log/debug :reason ::send-data :data data)
   (ws/send! *session*
-            (cheshire/generate-string data)))
+            (json/write-json-str data)))
 
 (defn send-init
   ([]
@@ -212,7 +207,7 @@
                                    :on-message (fn [_ ^HeapCharBuffer msg last?]
                                                  (let [message-text (.toString msg)]
                                                    (log/debug :reason ::receive :message message-text)
-                                                   (put! messages-ch (cheshire/parse-string message-text true))))
+                                                   (put! messages-ch (json/read-json message-text :key-fn keyword))))
                                    :on-open (fn [_] (log/debug :reason ::connected))
                                    :on-close #(log/debug :reason ::closed :code %2 :message %3)
                                    :on-error (fn [_ error]
