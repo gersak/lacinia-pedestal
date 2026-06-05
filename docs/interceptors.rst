@@ -40,7 +40,7 @@ The one behavioral difference between ``pedestal2`` and ``pedestal3`` is where
 ``body-data-interceptor`` stores the raw request body string:
 
 * ``pedestal2`` writes to ``:body``, overwriting the original request body input stream.
-* ``pedestal3`` writes to ``:json-body``, leaving ``:body`` untouched.
+* ``pedestal3`` writes to ``:json-body``, leaving ``:body`` as a consumed input stream.
 
 This matters if you have custom interceptors that inspect the raw request body after
 ``body-data-interceptor`` has run.
