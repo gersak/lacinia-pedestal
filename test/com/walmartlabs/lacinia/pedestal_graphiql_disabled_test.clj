@@ -15,7 +15,7 @@
 (ns com.walmartlabs.lacinia.pedestal-graphiql-disabled-test
   (:require
     [com.walmartlabs.lacinia.pedestal :as lp]
-    [clojure.test :refer [deftest is are use-fixtures]]
+    [clojure.test :refer [deftest is use-fixtures]]
     [io.pedestal.http :as http]
     [clj-http.client :as client]
     [com.walmartlabs.lacinia.schema :as schema]))

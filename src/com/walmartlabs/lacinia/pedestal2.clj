@@ -15,11 +15,9 @@
 (ns ^{:added "0.14.0"} com.walmartlabs.lacinia.pedestal2
   "Utilities for creating handlers, interceptors, routes, and service maps needed by a Pedestal service
   that exposes a GraphQL API and GraphiQL IDE."
-  (:require [cheshire.core :as cheshire]
-            [clojure.string :as str]
-            [com.walmartlabs.lacinia.pedestal.interceptors :as interceptors]
+  (:require [com.walmartlabs.lacinia.pedestal.interceptors :as interceptors]
             [com.walmartlabs.lacinia.pedestal.internal :as internal]
-            [com.walmartlabs.lacinia.tracing :as tracing]
+            [com.walmartlabs.lacinia.pedestal.internal2 :as internal2]
             [io.pedestal.http :as http]
             [io.pedestal.interceptor :refer [interceptor]]
             [ring.middleware.not-modified :refer [wrap-not-modified]]
@@ -45,15 +43,9 @@
   with a 400 response if the content type is not application/json."
   (interceptor
     {:name ::body-data
-     :enter (fn [context]
-              (let [content-type (-> context :request internal/content-type)]
-                (if (= content-type :application/json)
-                  (update-in context [:request :body] slurp)
-                  (assoc context :response (internal/failure-response "Must be application/json")))))}))
-
-(defn ^:private clear-graphql-data
-  [context]
-  (update context :request dissoc :graphql-query :graphql-vars :graphql-operation-name))
+     ;; In pedestal2 we overwrite the :body key, which is dodgy.  In pedestal3
+     ;; we write to a new key.
+     :enter (internal/enter-body-data :body)}))
 
 (def graphql-data-interceptor
   "Comes after [[body-data-interceptor]], extracts the JSON query and other data into request keys
@@ -66,24 +58,9 @@
   Comes after [[body-data-interceptor]]."
   (interceptor
     {:name ::graphql-data
-     :enter (fn [context]
-              (try
-                (let [payload (-> context :request :body (cheshire/parse-string true))
-                      {:keys [query variables]
-                       operation-name :operationName} payload]
-                  (update context :request
-                          assoc
-                          :graphql-query query
-                          :graphql-vars variables
-                          :graphql-operation-name operation-name))
-                (catch Exception e
-                  (assoc context :response
-                         (internal/failure-response
-                           {:message (str "Invalid request: " (.getMessage e))})))))
-     :leave clear-graphql-data
-     :error (fn [context exception]
-              (-> (clear-graphql-data context)
-                  (internal/add-error exception)))}))
+     :enter (internal/enter-graphql-data :body)
+     :leave internal/clear-graphql-data
+     :error internal/error-graphql-data}))
 
 (def missing-query-interceptor
   "Rejects the request with a 400 response is the JSON query variable is missing or blank.
@@ -91,11 +68,7 @@
   Comes after [[graphql-data-interceptor]]."
   (interceptor
     {:name ::missing-query
-     :enter (fn [context]
-              (if (-> context :request :graphql-query str/blank?)
-                (assoc context :response
-                       (internal/failure-response "JSON 'query' key is missing or blank"))
-                context))}))
+     :enter internal/enter-missing-query}))
 
 (defn query-parser-interceptor
   "Given a compiled schema, returns an interceptor that parses the query.
@@ -184,23 +157,13 @@
   tracing is enabled for this request (that decision is made by [[enable-tracing-interceptor]])."
   (interceptor
     {:name ::initialize-tracing
-     :enter (fn [context]
-              ;; Without this, the tracing during parsing doesn't know when the request actually started
-              ;; and assumes no real time has passed, which is less accurate. Capturing the timing start early
-              ;; ensures that time spent parsing the request body or doing other work before we get to parsing
-              ;; is properly accounted for.
-              (assoc-in context [:request ::timing-start] (tracing/create-timing-start)))}))
+     :enter (internal/enter-initialize-tracing ::timing-start)}))
 
 (def ^{:added "0.15.0"} enable-tracing-interceptor
   "Enables tracing if the `lacinia-tracing` header is present."
   (interceptor
-    {:name ::enable-tracing
-     :enter (fn [context]
-              ;; Must come after the app context is added to the request.
-              (let [request (:request context)
-                    enabled? (get-in request [:headers "lacinia-tracing"])]
-                (cond-> context
-                  enabled? (update-in [:request :lacinia-app-context] tracing/enable-tracing))))}))
+    {:name  ::enable-tracing
+     :enter internal/enter-enable-tracing}))
 
 (defn default-interceptors
   "Returns the default set of GraphQL interceptors, as a seq:
@@ -313,7 +276,7 @@
   The subscription options are documented at [[listener-fn-factory]], with the addition
   of :subscriptions-path (defaulting to \"/ws\")."
   [service-map compiled-schema subscription-options]
-  (internal/add-subscriptions-support service-map
+  (internal2/add-subscriptions-support service-map
                                       compiled-schema
                                       (:subscriptions-path subscription-options default-subscriptions-path)
                                       subscription-options))

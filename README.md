@@ -16,38 +16,31 @@ as [Apollo GraphQL](https://github.com/apollographql/subscriptions-transport-ws)
 
 ## Usage
 
-For a basic Pedestal server, simply supply a compiled Lacinia schema to
-the `com.walmartlabs.lacinia.pedestal2/default-service` function to
-generate a service, then invoke `io.pedestal.http/create-server` and `/start`.
+### Pedestal 0.8 Connector API (recommended)
+
+For new applications, use `com.walmartlabs.lacinia.pedestal3` with the Pedestal 0.8
+connector API:
 
 ```clojure
 (ns graphql-demo.server
-  (:require [io.pedestal.http :as http]
-            [com.walmartlabs.lacinia.pedestal2 :as lp]
+  (:require [io.pedestal.connector :as conn]
+            [io.pedestal.http.jetty :as jetty]
+            [com.walmartlabs.lacinia.pedestal3 :as lp]
             [com.walmartlabs.lacinia.schema :as schema]
             [com.walmartlabs.lacinia.util :as util]))
 
-(def hello-schema 
-  (-> {:objects 
-        {:Query
-         {:fields
-            ;; String is quoted here; in EDN the quotation is not required 
-            ;; You could also use :String
-            {:hello {:type 'String}}}}}
-       (util/inject-resolvers {:Query/hello (constantly "hello")})
-       (schema/compile)))
+(def hello-schema
+  (-> {:objects {:Query {:fields {:hello {:type 'String}}}}}
+      (util/attach-resolvers {:Query/hello (constantly "hello")})
+      schema/compile))
 
-;; Use default options:
-(def service (lp/default-service hello-schema nil))
-
-;; This is an adapted service map, that can be started and stopped.
-;; From the REPL you can call http/start and http/stop on this service:
-(defonce runnable-service (http/create-server service))
-
-(defn -main
-  [& args]
-  (println "\nCreating your server...")
-  (http/start runnable-service))
+(def connector
+  (-> (conn/default-connector-map 8888)
+      (conn/with-routes #{["/api" :post (lp/default-interceptors hello-schema nil)
+                           :route-name ::graphql-api]}
+                        (lp/subscription-routes hello-schema))
+      (jetty/create-connector nil)
+      conn/start!))
 ```
 
 Lacinia will handle POST requests at the `/api` endpoint:
@@ -57,26 +50,56 @@ $ curl localhost:8888/api -X POST -H "content-type: application/json" -d '{"quer
 {"data":{"hello":"world"}}
 ```
 
+`pedestal3` does not include a `default-service` convenience function; applications
+are expected to construct the connector map directly using the building blocks provided.
+
+### Pedestal Legacy API (pedestal2)
+
+For applications using the legacy `io.pedestal.http` API, use
+`com.walmartlabs.lacinia.pedestal2/default-service`:
+
+```clojure
+(ns graphql-demo.server
+  (:require [io.pedestal.http :as http]
+            [com.walmartlabs.lacinia.pedestal2 :as lp]
+            [com.walmartlabs.lacinia.schema :as schema]
+            [com.walmartlabs.lacinia.util :as util]))
+
+(def hello-schema
+  (-> {:objects {:Query {:fields {:hello {:type 'String}}}}}
+      (util/attach-resolvers {:Query/hello (constantly "hello")})
+      schema/compile))
+
+(def service (lp/default-service hello-schema nil))
+
+(defonce runnable-service (http/create-server service))
+
+(defn -main
+  [& args]
+  (println "\nCreating your server...")
+  (http/start runnable-service))
+```
+
 You can also access the GraphQL IDE at `http://localhost:8888/ide`.
 
 ## Development Mode
 
 When developing an application, it is desirable to be able to change the schema
 without restarting.
-Lacinia-Pedestal supports this: in the above example, the schema passed to
-`default-service` could be a _function_ that returns the compiled schema.
-It could even be a Var containing the function that returns the compiled schema.
+Lacinia-Pedestal supports this: the schema passed to `default-interceptors` (or
+`default-service` in `pedestal2`) can be a _function_ that returns the compiled schema,
+or even a Var containing such a function.
 
 In this way, the Pedestal stack continues to run, but each request rebuilds
 the compiled schema based on the latest code you've loaded into the REPL.
 
-## Beyond default-server
+## Beyond the defaults
 
-`default-service` is intentionally limited, and exists only to help you get started.
-Once you start adding anything more complicated, such as authentication, or supporting
-multiple schemas (or schema versions) at different paths, 
-you will want to simply create your routes and server in your own code,
-using the building-blocks provided by `com.walmartlabs.lacinia.pedestal2`.
+`default-interceptors` (and `pedestal2/default-service`) are intentionally limited
+scaffolding to help you get started. Once you add anything more sophisticated — such
+as authentication, multiple schemas, or custom interceptors — you will want to
+construct your routes and connector directly, using the building-blocks provided by
+`com.walmartlabs.lacinia.pedestal3` (or `pedestal2` for the legacy API).
 
 ### GraphiQL
 
