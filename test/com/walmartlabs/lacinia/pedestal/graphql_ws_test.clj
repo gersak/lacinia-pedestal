@@ -13,14 +13,13 @@
 ; limitations under the License.
 
 (ns com.walmartlabs.lacinia.pedestal.graphql-ws-test
-  "Tests for graphql-transport-ws protocol support and the :context-initializer hook in
-  subscriptions2 (the pedestal3 connector path).
+  "graphql-transport-ws protocol support and the :context-initializer hook for subscriptions2.
 
-  Kept in its own namespace so the upstream pedestal3-test fixture and tests stay untouched:
-  this namespace stands up its own subscription server (on a separate port) wired with a
-  :context-initializer, and opens raw WebSocket connections so it can control the negotiated
-  subprotocol and the upgrade-request headers."
+  Runs its own subscription server on a separate port so the upstream pedestal3-test fixture
+  stays untouched, and opens raw WebSocket connections to control the subprotocol, headers, and
+  query string of the upgrade."
   (:require [clojure.test :refer [deftest is use-fixtures]]
+            [com.walmartlabs.lacinia :as lacinia]
             [com.walmartlabs.lacinia.pedestal.subscriptions2 :as subscriptions2]
             [com.walmartlabs.lacinia.test-utils :as tu
              :refer [*ping-context *echo-context *session*
@@ -32,54 +31,58 @@
             [hato.websocket :as ws]
             [clojure.core.async :refer [chan put!]]
             [io.pedestal.log :as log]
-            [com.walmartlabs.test-reporting :refer [reporting]]
             [io.pedestal.connector :as conn]))
 
-;; Own port, so this server coexists with the upstream pedestal3-test server (8888).
-(def port 8889)
-
+(def port 8889)                         ; coexists with pedestal3-test on 8888
 (def ws-url (str "ws://localhost:" port "/ws"))
 
-;; ---------------------------------------------------------------------------
-;; User-context wiring for the subscription endpoint.
-;;
-;; This demonstrates the intended use of :context-initializer: authenticate the
-;; WebSocket upgrade once, stash the resulting principal on the per-connection
-;; context, and -- via a small user-land interceptor -- make it visible to every
-;; query and subscription resolver on that connection. The library stays free of
-;; any "user context" opinion; the bridge lives entirely in application code.
+;; --- Authentication ---------------------------------------------------------
+;; A :context-initializer reads a credential off the upgrade request and stashes the resulting
+;; principal on the connection; an interceptor then merges it into every resolver's app-context.
+;; The library has no opinion about "user context" -- this is all application code.
 
 (def ^:private auth-header "authorization")
 
-(defn ^:private authenticate
-  "Stand-in authentication: resolves the upgrade request to a principal map, or nil when the
-  request carries no recognized credentials (an anonymous connection)."
-  [request]
-  (case (get-in request [:headers auth-header])
+(defn ^:private principal-for-token
+  "Maps a bearer token to a principal, or nil if unrecognized."
+  [token]
+  (case token
     "token-alice" {:user "alice" :roles #{:admin}}
     "token-bob"   {:user "bob"   :roles #{:viewer}}
     nil))
 
+(defn ^:private request-token
+  "Bearer token from the upgrade request: the Authorization header (non-browser clients) or an
+  ?access_token=… query param (the channel browsers use, as they cannot set headers)."
+  [request]
+  (or (get-in request [:headers auth-header])
+      (some->> (:query-string request)
+               (re-find #"(?:^|&)access_token=([^&]+)")
+               second)))
+
+(defn ^:private authenticate
+  "Resolves an upgrade request to a principal, or nil for an anonymous connection."
+  [request]
+  (principal-for-token (request-token request)))
+
 (def ^:private principal-key ::principal)
 
-(defn ^:private inject-app-context+principal-interceptor
-  "Like the library's app-context injector, but also merges the connection-scoped principal
-  (placed on the context by the :context-initializer) into the resolver app-context. This is
-  the user-land bridge that carries the authenticated user into every resolver. A nil principal
-  (anonymous connection) merges to nothing."
-  [app-context]
+(defn ^:private inject-principal-interceptor
+  "The app-context injector, additionally exposing the connection's principal to resolvers. The
+  principal comes from the handshake (:context-initializer) or, failing that, from a token in the
+  connection_init payload — the fallback browser clients rely on, since :context-initializer runs
+  before that payload arrives. A nil (anonymous) principal merges to nothing."
+  []
   (interceptor
-    {:name  ::inject-app-context+principal
+    {:name  ::inject-principal
      :enter (fn [context]
-              (assoc-in context [:request :lacinia-app-context]
-                        (-> (or app-context {})
-                            (assoc :request (:request context))
-                            (merge (get context principal-key)))))}))
+              (let [principal (or (get context principal-key)
+                                  (principal-for-token (:authToken (:connection-params context))))]
+                (assoc-in context [:request :lacinia-app-context]
+                          (merge {:request (:request context)} principal))))}))
 
-(defn ^:private user-context-subscription-interceptor
-  "Builds the subscription interceptor used by the test server: a :context-initializer that
-  authenticates the upgrade request, plus a custom interceptor chain (identical to the library
-  default except that it swaps in [[inject-app-context+principal-interceptor]])."
+(defn ^:private auth-subscription-interceptor
+  "subscriptions2 endpoint that authenticates the upgrade and exposes the principal to resolvers."
   [schema]
   (subscriptions2/subscription-interceptor
     schema
@@ -90,199 +93,172 @@
      [subscriptions2/exception-handler-interceptor
       subscriptions2/send-operation-response-interceptor
       (subscriptions2/query-parser-interceptor schema)
-      (inject-app-context+principal-interceptor nil)
+      (inject-principal-interceptor)
       subscriptions2/execute-operation-interceptor]}))
 
 (defn server-fixture
   [f]
-  (let [schema              (tu/compile-schema)
-        subscription-routes (table/table-routes
-                              [["/ws" :get (user-context-subscription-interceptor schema)
-                                :route-name ::subscriptions]])
-        connector           (-> (conn/default-connector-map port)
-                                (conn/with-routes subscription-routes)
-                                (jetty/create-connector nil)
-                                (conn/start!))]
+  (let [routes    (table/table-routes
+                    [["/ws" :get (auth-subscription-interceptor (tu/compile-schema))
+                      :route-name ::subscriptions]])
+        connector (-> (conn/default-connector-map port)
+                      (conn/with-routes routes)
+                      (jetty/create-connector nil)
+                      (conn/start!))]
     (try
       (f)
-      (finally
-        (conn/stop! connector)))))
+      (finally (conn/stop! connector)))))
 
 (use-fixtures :once server-fixture)
 
-;; ---------------------------------------------------------------------------
-;; Raw WebSocket helpers.
-;;
-;; These open their own connections so the tests can control the negotiated subprotocol
-;; and the upgrade-request headers, then rebind the test-utils dynamic vars so the existing
-;; send-*/<message!! helpers can be reused.
+;; --- WebSocket helpers ------------------------------------------------------
 
 (defn open-connection
-  "Opens a raw WebSocket connection to the subscription endpoint and returns a map of
-  {:session, :messages-ch}. `opts` may include :subprotocols and :headers."
-  [{:keys [subprotocols headers]
+  "Opens a raw WebSocket. `opts` may set :subprotocols, :headers, and :query-string."
+  [{:keys [subprotocols headers query-string]
     :or   {subprotocols ["graphql-ws"]}}]
   (let [messages-ch (chan 10)
+        url         (cond-> ws-url query-string (str "?" query-string))
         session     @(ws/websocket
-                       ws-url
+                       url
                        (cond-> {:subprotocols subprotocols
-                                :on-message   (fn [_ msg _last?]
-                                                (put! messages-ch
-                                                      (json/read-json (str msg) :key-fn keyword)))
-                                :on-error     (fn [_ error]
-                                                (log/error :reason ::ws-error :exception error))}
+                                :on-message (fn [_ msg _last?]
+                                              (put! messages-ch (json/read-json (str msg) :key-fn keyword)))
+                                :on-error   (fn [_ error]
+                                              (log/error :reason ::ws-error :exception error))}
                          headers (assoc :headers headers)))]
     {:session session :messages-ch messages-ch}))
 
 (defmacro with-connection
-  "Opens a connection with `opts`, binds tu/*session* and tu/*messages-ch* to it so the
-  test-utils helpers operate on it, and closes it afterwards."
+  "Opens a connection for `opts`, binds the test-utils session/channel vars to it, runs `body`,
+  then closes it."
   [opts & body]
   `(let [conn# (open-connection ~opts)]
      (binding [*session*        (:session conn#)
                tu/*messages-ch* (:messages-ch conn#)]
-       (try
-         ~@body
-         (finally
-           (ws/close! (:session conn#)))))))
+       (try ~@body
+            (finally (ws/close! (:session conn#)))))))
 
 (defn <non-ka!!
-  "Reads the next message, skipping over server keep-alive (:ka) messages."
+  "Next message, skipping keep-alives."
   ([] (<non-ka!! 250))
   ([timeout-ms]
    (loop []
      (let [message (<message!! timeout-ms)]
-       (if (= message {:type "ka"})
-         (recur)
-         message)))))
+       (if (= message {:type "ka"}) (recur) message)))))
 
-;; ---------------------------------------------------------------------------
-;; graphql-transport-ws protocol tests.
+(defn init!
+  "Sends connection_init (with optional payload) and asserts the ack."
+  ([] (init! nil))
+  ([payload]
+   (send-init payload)
+   (is (= {:type "connection_ack"} (<non-ka!!)))))
+
+(defn start!
+  "Starts an operation (op is :start or :subscribe) on a fresh id; returns the id."
+  [op query]
+  (let [id (swap! *subscriber-id inc)]
+    (send-data {:id id :type op :payload {:query query}})
+    id))
+
+(defn echo!
+  "Runs an echo query and drains both reply messages (data + complete), so the resolver has
+  captured its context and the channel is left clean for the next operation."
+  []
+  (start! :start "{ echo(value: \"ws\") { value }}")
+  (<non-ka!!)                            ; data
+  (<non-ka!!))                           ; complete
+
+;; --- graphql-transport-ws protocol ------------------------------------------
 
 (deftest transport-ws-ping-pong
-  ;; A graphql-transport-ws client may send "ping" at any time and must receive "pong".
   (with-connection {:subprotocols ["graphql-transport-ws"]}
-    (send-init)
-    (is (= {:type "connection_ack"} (<non-ka!!)))
-
+    (init!)
     (send-data {:type :ping})
     (is (= {:type "pong"} (<non-ka!!)))))
 
 (deftest transport-ws-subscribe-and-complete
-  ;; Over graphql-transport-ws, the client uses "subscribe"/"complete" and the server
-  ;; replies with "next" messages (not the legacy "data").
+  ;; "subscribe"/"complete" verbs, with "next" replies rather than the legacy "data".
   (with-connection {:subprotocols ["graphql-transport-ws"]}
-    (send-init)
-    (is (= {:type "connection_ack"} (<non-ka!!)))
+    (init!)
+    (let [id (start! :subscribe "subscription { ping(message: \"modern\", count: 2) { message }}")]
+      (is (= {:id id :type "next" :payload {:data {:ping {:message "modern #1"}}}} (<non-ka!!)))
+      (is (= {:id id :type "next" :payload {:data {:ping {:message "modern #2"}}}} (<non-ka!!)))
+      (is (= {:id id :type "complete"} (<non-ka!!))))))
 
-    (let [id (swap! *subscriber-id inc)]
-      (send-data {:id      id
-                  :type    :subscribe
-                  :payload {:query "subscription { ping(message: \"modern\", count: 2 ) { message }}"}})
-
-      (is (= {:id      id
-              :payload {:data {:ping {:message "modern #1"}}}
-              :type    "next"}
-             (<non-ka!!)))
-
-      (is (= {:id      id
-              :payload {:data {:ping {:message "modern #2"}}}
-              :type    "next"}
-             (<non-ka!!)))
-
-      (is (= {:id   id
-              :type "complete"}
-             (<non-ka!!))))))
-
-(deftest transport-ws-operation-uses-next
-  ;; A plain query over graphql-transport-ws is delivered as a "next" message followed by "complete".
+(deftest transport-ws-query-uses-next
+  ;; A plain query is delivered as "next" then "complete".
   (with-connection {:subprotocols ["graphql-transport-ws"]}
-    (send-init)
-    (is (= {:type "connection_ack"} (<non-ka!!)))
+    (init!)
+    (let [id (start! :subscribe "{ echo(value: \"modern\") { value }}")]
+      (is (= {:id id :type "next" :payload {:data {:echo {:value "modern"}}}} (<non-ka!!)))
+      (is (= {:id id :type "complete"} (<non-ka!!))))))
 
-    (let [id (swap! *subscriber-id inc)]
-      (send-data {:id      id
-                  :type    :subscribe
-                  :payload {:query "{ echo(value: \"modern\") { value }}"}})
+;; --- :context-initializer — who is the connected user? ----------------------
+;; The principal is established once at the handshake, from one of three channels, and must be
+;; visible to every resolver. The test resolvers capture their app-context into the
+;; *echo-context / *ping-context atoms.
 
-      (is (= {:id      id
-              :payload {:data {:echo {:value "modern"}}}
-              :type    "next"}
-             (<non-ka!!)))
-
-      (is (= {:id   id
-              :type "complete"}
-             (<non-ka!!))))))
-
-;; ---------------------------------------------------------------------------
-;; User-context tests.
-;;
-;; These exercise the intended use of :context-initializer (see the wiring above):
-;; the connection authenticates from the upgrade request, and the authenticated
-;; principal becomes visible to every resolver on the connection. The test resolvers
-;; (resolve-echo / stream-ping) capture their app-context into *echo-context /
-;; *ping-context, which is what we assert against.
-
-(deftest subscription-resolver-sees-authenticated-principal
-  ;; The principal established at connection open is visible to the subscription streamer.
+(deftest principal-from-authorization-header
   (with-connection {:headers {auth-header "token-alice"}}
-    (send-init)
-    (is (= {:type "connection_ack"} (<non-ka!!)))
+    (init!)
+    (echo!)
+    (is (= {:user "alice" :roles #{:admin}} (select-keys @*echo-context [:user :roles])))))
 
-    (let [id (swap! *subscriber-id inc)]
-      (send-data {:id      id
-                  :type    :start
-                  :payload {:query "subscription { ping(message: \"hi\", count: 1 ) { message }}"}})
-      (<non-ka!!)
-      (reporting {:context @*ping-context}
-        (is (= {:user "alice" :roles #{:admin}}
-               (select-keys @*ping-context [:user :roles]))
-            "The streamer's app-context carries the authenticated principal.")))))
+(deftest principal-from-url-token
+  ;; Browsers can't set headers, so they pass the token as ?access_token=… ; the
+  ;; :context-initializer reads it from the upgrade request's :query-string. (This also
+  ;; confirms pedestal3 surfaces the query-string on the upgrade.)
+  (with-connection {:query-string "access_token=token-alice"}
+    (init!)
+    (echo!)
+    (is (= {:user "alice" :roles #{:admin}} (select-keys @*echo-context [:user :roles])))))
 
-(deftest operation-resolver-sees-authenticated-principal
-  ;; The same principal is visible to plain query/mutation operations on the connection.
+(deftest principal-reaches-subscription-streamer
   (with-connection {:headers {auth-header "token-alice"}}
-    (send-init)
-    (is (= {:type "connection_ack"} (<non-ka!!)))
+    (init!)
+    (start! :start "subscription { ping(message: \"hi\", count: 1) { message }}")
+    (<non-ka!!)
+    (is (= {:user "alice" :roles #{:admin}} (select-keys @*ping-context [:user :roles])))))
 
-    (let [id (swap! *subscriber-id inc)]
-      (send-data {:id      id
-                  :type    :start
-                  :payload {:query "{ echo(value: \"ws\") { value }}"}})
-      (<non-ka!!)
-      (reporting {:context @*echo-context}
-        (is (= {:user "alice" :roles #{:admin}}
-               (select-keys @*echo-context [:user :roles]))
-            "The resolver's app-context carries the authenticated principal.")))))
-
-(deftest authenticated-principal-survives-multiple-operations
-  ;; The per-message app-context injection must not drop the connection principal; it must be
-  ;; present on every operation, not just the first.
+(deftest principal-survives-every-operation
+  ;; Per-message app-context injection must not drop the principal after the first operation.
   (with-connection {:headers {auth-header "token-bob"}}
-    (send-init)
-    (is (= {:type "connection_ack"} (<non-ka!!)))
-
+    (init!)
     (dotimes [_ 2]
       (reset! *echo-context nil)
-      (let [id (swap! *subscriber-id inc)]
-        (send-data {:id      id
-                    :type    :start
-                    :payload {:query "{ echo(value: \"ws\") { value }}"}})
-        (<non-ka!!)                                ; data/next
-        (<non-ka!!)                                ; complete
-        (is (= "bob" (:user @*echo-context)))))))
+      (echo!)
+      (is (= "bob" (:user @*echo-context))))))
 
 (deftest anonymous-connection-has-no-principal
-  ;; Without credentials, authenticate returns nil and nothing is merged into the app-context.
   (with-connection {}
-    (send-init)
-    (is (= {:type "connection_ack"} (<non-ka!!)))
+    (init!)
+    (echo!)
+    (is (nil? (:user @*echo-context)))))
 
-    (let [id (swap! *subscriber-id inc)]
-      (send-data {:id      id
-                  :type    :start
-                  :payload {:query "{ echo(value: \"ws\") { value }}"}})
-      (<non-ka!!)
-      (reporting {:context @*echo-context}
-        (is (nil? (:user @*echo-context)))
-        (is (nil? (:roles @*echo-context)))))))
+;; --- connection_init payload (::lacinia/connection-params) ------------------
+;; The other in-band channel — and, besides the URL, the only one a browser has: a
+;; client-supplied connection_init payload, surfaced to resolvers as ::lacinia/connection-params.
+;; It must keep working through this server's custom interceptor, independent of the principal.
+
+(deftest connection-init-params-reach-resolver
+  (with-connection {}
+    (init! {:authToken "abc"})
+    (echo!)
+    (is (= {:authToken "abc"} (::lacinia/connection-params @*echo-context)))))
+
+(deftest principal-from-connection-init-token
+  ;; The browser auth flow end-to-end: the token rides in the connection_init payload (not a
+  ;; header or the URL), is authenticated per operation — not by :context-initializer, which
+  ;; runs before the payload exists — and the resulting principal reaches the resolver.
+  (with-connection {}
+    (init! {:authToken "token-alice"})
+    (echo!)
+    (is (= {:user "alice" :roles #{:admin}} (select-keys @*echo-context [:user :roles])))))
+
+(deftest principal-and-connection-init-params-coexist
+  (with-connection {:headers {auth-header "token-alice"}}
+    (init! {:locale "en"})
+    (echo!)
+    (is (= "alice" (:user @*echo-context)))
+    (is (= {:locale "en"} (::lacinia/connection-params @*echo-context)))))
